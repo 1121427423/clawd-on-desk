@@ -26,6 +26,7 @@ const {
   SUPPORTED_DSH_VERSION,
   __test: dshInstallTest,
 } = require("../hooks/dsh-install");
+const homePatch = require("../hooks/dsh-home-patch");
 
 const DSH_BRIDGE_SOURCE_DIR = path.join(__dirname, "..", "hooks", "dsh-clawd-bridge");
 
@@ -200,6 +201,38 @@ describe("agent installation detector", () => {
     assert.strictEqual(dsh.clawdIntegration.detected, true);
     assert.strictEqual(dsh.clawdIntegration.reason, "managed-plugin");
     assert.strictEqual(dsh.clawdIntegration.paths.pluginDir, canonicalRealpath(pluginDir));
+  });
+
+  it("reports a machine-level home-patch registration as Clawd integration", () => {
+    const homeDir = makeHome();
+    const dshHome = path.join(homeDir, ".dsh");
+    writeJson(path.join(dshHome, "profiles", "web", "package.json"), {
+      name: "dsh-profile-web",
+      dependencies: {},
+      dsh: { profile: { bundles: [] } },
+    });
+    // The machine-level route lives in $DSH_HOME/cordis.patch.yml and points at
+    // a stable copy under the DSH home, so no profile carries the dependency.
+    const stableDir = homePatch.resolveStableBridgeDir(dshHome);
+    fs.cpSync(DSH_BRIDGE_SOURCE_DIR, stableDir, { recursive: true });
+    writeJson(path.join(stableDir, "clawd-manifest.json"), {
+      owner: MANAGED_OWNER,
+      schemaVersion: 1,
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      bundleHash: dshInstallTest.hashBridgeDirectorySync(fs, stableDir),
+      supportedDshRange: SUPPORTED_DSH_RANGE,
+      installedDshVersion: SUPPORTED_DSH_VERSION,
+    });
+    fs.writeFileSync(
+      homePatch.resolveHomePatchPath(dshHome),
+      homePatch.planManagedBlockWrite("", homePatch.resolveStableBridgeEntry(dshHome)).content,
+      "utf8",
+    );
+
+    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
+    const dsh = byId(report, "deepseek-harness");
+    assert.strictEqual(dsh.clawdIntegration.detected, true);
+    assert.strictEqual(dsh.clawdIntegration.reason, "home-patch");
   });
 
   it("detects a DSH CLI on PATH before the profile home is initialized", {

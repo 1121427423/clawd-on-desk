@@ -630,6 +630,36 @@ function markerInDirectoryFiles(fsImpl, dirPath, marker, options = {}) {
   return false;
 }
 
+/**
+ * The machine-level home patch registers the bridge for every profile instead
+ * of inside one profile, so the profile health alone under-reports it. Report
+ * the machine-level registration when that is the route that is live.
+ */
+function detectHomePatchRegistration(health, paths, options) {
+  const homePatchHealth = dsh.inspectHomePatchRegistrationSync({
+    fs: options.fs,
+    dshHome: paths.parentDir,
+    managedRoot: options.dshManagedRoot,
+    homeDir: options.homeDir,
+    env: options.env,
+    platform: options.platform,
+  });
+  if (homePatchHealth.status === "ok") {
+    return {
+      detected: true,
+      reason: "home-patch",
+      detail: `${homePatchHealth.patchPath} registers the Clawd bridge for every DSH profile`,
+      paths: { patchPath: homePatchHealth.patchPath, stableDir: homePatchHealth.stableDir },
+    };
+  }
+  return {
+    detected: false,
+    reason: health.status,
+    detail: `DeepSeek Harness bridge is ${health.status}`,
+    paths: { profileDir: health.profileDir },
+  };
+}
+
 function detectClawdIntegration(descriptor, paths, options) {
   const fsImpl = options.fs;
   if (descriptor.agentId === "deepseek-harness") {
@@ -649,12 +679,7 @@ function detectClawdIntegration(descriptor, paths, options) {
         detail: `${health.profileDir} contains the verified Clawd bridge`,
         paths: { profileDir: health.profileDir, pluginDir: health.resolved.packageDir },
       }
-      : {
-        detected: false,
-        reason: health.status,
-        detail: `DeepSeek Harness bridge is ${health.status}`,
-        paths: { profileDir: health.profileDir },
-      };
+      : detectHomePatchRegistration(health, paths, options);
   }
   if (descriptor.agentId === "pi" || descriptor.agentId === "omp") {
     const label = descriptor.agentId === "omp" ? "OMP" : "Pi";

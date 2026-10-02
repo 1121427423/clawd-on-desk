@@ -238,6 +238,17 @@ loader id would mount the bridge twice and double every state event. The
 machine-level route therefore refuses to start while a managed profile bundle is
 live, and vice versa.
 
+Route selection happens before the CLI probe: when
+`$DSH_HOME/profiles/desktop/package.json` exists, sync takes the machine-level
+route and never invokes the CLI, so a desktop-only machine with no `dsh` on
+`PATH` is still served. The version gate still runs whenever a CLI exists to
+probe; a host that cannot be probed records an assumed contract, the same trade
+the no-CLI manual path already makes. Uninstall tears down both routes, so a
+host that switched routes is never left with the other one still mounting the
+bridge. `detectAgentInstallations` reports the machine-level route as Clawd
+integration (`reason: home-patch`), so Settings and Doctor show it as connected
+even though no profile carries the dependency.
+
 The mechanism was verified on 2026-10-02 by writing the block and running
 `dsh --profile web --dump-config`, which composed `clawd-bridge` with its
 absolute path rewritten to a `file://` URL. Composing the `desktop` profile

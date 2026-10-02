@@ -134,3 +134,51 @@ test("the collision guard does not false-positive on a home with no bundle", asy
   assert.strictEqual(inspected.status, "ok");
   assert.strictEqual(inspected.marker.registration, "home-patch");
 });
+
+test("sync takes the machine-level route when the desktop profile is present", async (t) => {
+  const { dshHome, options } = makeHome(t);
+  // No CLI at all: the desktop app's runtime is the only DSH on this machine,
+  // which is exactly the case the profile route could never serve.
+  const result = await dsh.syncDeepSeekHarnessIntegration({ ...options, dshCommand: false });
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(fs.existsSync(path.join(dshHome, "cordis.patch.yml")), true);
+  const health = await dsh.inspectHomePatchRegistration(options);
+  assert.strictEqual(health.status, "ok");
+  assert.strictEqual(health.marker.installedDshVersionAssumedAtStaging, true);
+  // Nothing was installed into a profile: the desktop route is patch-only.
+  assert.strictEqual(fs.existsSync(path.join(dshHome, "profiles", "web", "package.json")), false);
+});
+
+test("sync keeps the profile route when no desktop profile exists", async (t) => {
+  const { dshHome, options } = makeHome(t);
+  fs.rmSync(path.join(dshHome, "profiles", "desktop"), { recursive: true, force: true });
+  assert.strictEqual(await dsh.isDesktopTargetPresent(options), false);
+  const result = await dsh.syncDeepSeekHarnessIntegration({ ...options, dshCommand: false });
+  // Without a CLI the profile route reports its usual non-mutating outcome and
+  // must not have written a home patch.
+  assert.notStrictEqual(result.status, "ok");
+  assert.strictEqual(fs.existsSync(path.join(dshHome, "cordis.patch.yml")), false);
+});
+
+test("the sync inspector the detection path uses agrees with the async one", async (t) => {
+  const { options } = makeHome(t);
+  assert.strictEqual(dsh.inspectHomePatchRegistrationSync(options).status, "absent");
+  await dsh.registerHomePatchBridge({ ...options, dshVersion: "0.2.0-rc.2" });
+  const syncHealth = dsh.inspectHomePatchRegistrationSync(options);
+  const asyncHealth = await dsh.inspectHomePatchRegistration(options);
+  assert.strictEqual(syncHealth.status, "ok");
+  assert.strictEqual(syncHealth.status, asyncHealth.status);
+  assert.strictEqual(syncHealth.stableEntry, asyncHealth.stableEntry);
+  assert.strictEqual(syncHealth.marker.bundleHash, asyncHealth.marker.bundleHash);
+});
+
+test("unregister tears the machine-level registration down", async (t) => {
+  const { dshHome, options } = makeHome(t);
+  const registered = await dsh.syncDeepSeekHarnessIntegration({ ...options, dshCommand: false });
+  assert.strictEqual(registered.status, "ok");
+  const result = await dsh.unregisterDeepSeekHarness(options);
+  assert.strictEqual(result.homePatchRemoved, true);
+  assert.strictEqual(result.removed, true);
+  assert.strictEqual(fs.existsSync(path.join(dshHome, "cordis.patch.yml")), false);
+  assert.strictEqual((await dsh.inspectHomePatchRegistration(options)).status, "absent");
+});

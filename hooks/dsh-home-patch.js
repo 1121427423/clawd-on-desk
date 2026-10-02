@@ -181,6 +181,37 @@ function planManagedBlockRemoval(content) {
   return { action: next === text ? "unchanged" : "removed", content: next };
 }
 
+/**
+ * Compare two entry paths the way the filesystem sees them.
+ *
+ * A DSH home reached through a symlink (macOS `/var` -> `/private/var`, or a
+ * relocated home) yields two spellings of one file, so a raw string compare
+ * would report Clawd's own block as a foreign target.
+ * @param left - one path from the patch file or from Clawd.
+ * @param right - the other path.
+ * @param fsImpl - fs module used for the realpath probe.
+ * @returns whether both names resolve to the same file.
+ */
+function sameEntryPath(left, right, fsImpl = require("fs")) {
+  if (typeof left !== "string" || typeof right !== "string" || !left || !right) return false;
+  const canonical = (value) => {
+    const resolved = path.resolve(value);
+    const suffix = [];
+    let cursor = resolved;
+    while (true) {
+      try {
+        return path.join(fsImpl.realpathSync(cursor), ...suffix);
+      } catch {
+        const parent = path.dirname(cursor);
+        if (parent === cursor) return resolved;
+        suffix.unshift(path.basename(cursor));
+        cursor = parent;
+      }
+    }
+  };
+  return canonical(left) === canonical(right);
+}
+
 /** Absolute path of the home-level patch file for one DSH home. */
 function resolveHomePatchPath(dshHome) {
   return path.join(path.resolve(dshHome), HOME_PATCH_FILENAME);
@@ -220,6 +251,12 @@ async function writeHomePatchFile(filePath, plan, options = {}) {
     await fspImpl.writeFile(backupPath, existing, { mode: 0o600 });
   }
   const tempPath = `${filePath}.clawd-tmp-${process.pid}-${Date.now()}`;
+  if (plan.action === "removed" && plan.content === "") {
+    // The file held nothing but Clawd's block, so there is no user content to
+    // preserve and leaving an empty document behind would just be noise.
+    await fspImpl.rm(filePath, { force: true });
+    return { action: plan.action, backupPath };
+  }
   await fspImpl.writeFile(tempPath, plan.content, { mode: 0o600 });
   await fspImpl.rename(tempPath, filePath);
   return { action: plan.action, backupPath };
@@ -241,5 +278,6 @@ module.exports = {
   resolveHomePatchPath,
   resolveStableBridgeDir,
   resolveStableBridgeEntry,
+  sameEntryPath,
   writeHomePatchFile,
 };

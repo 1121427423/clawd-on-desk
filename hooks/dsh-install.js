@@ -2160,6 +2160,51 @@ async function discardCreatedGenerationIfUnreferenced(generation, _health, optio
   await fsp.rm(candidate, { recursive: true, force: false });
 }
 
+/**
+ * Sync the machine-level registration.
+ *
+ * This route never invokes the CLI, so it works on a desktop-app-only machine.
+ * The version gate still runs whenever a CLI exists to probe; a host that
+ * cannot be probed records an assumed contract, the same trade the no-CLI
+ * manual path already makes.
+ */
+async function syncHomePatchRegistration(options = {}) {
+  const operation = options.operation || "install";
+  const dshHome = resolveCanonicalDshHome(options);
+  const commandInfo = await resolveDshCommand(options);
+  const probedVersion = commandInfo ? await readDshVersion(commandInfo, options) : null;
+  const contract = probedVersion ? dshContractForVersion(probedVersion) : PREFERRED_DSH_CONTRACT;
+  if (probedVersion && !contract) {
+    return {
+      status: "error",
+      reason: "version-unsupported",
+      message: `DeepSeek Harness ${probedVersion} is unsupported; this bridge supports ${supportedDshRangeLabel()}`,
+      detectedVersion: probedVersion,
+      supportedRange: supportedDshRangeLabel(),
+    };
+  }
+  const lock = await acquireMutationLock(options);
+  try {
+    const result = await registerHomePatchBridge({
+      ...options,
+      dshHome,
+      operation,
+      contract,
+      dshVersion: probedVersion || contract.version,
+      dshVersionAssumed: !probedVersion,
+    });
+    if (result.status !== "ok") return result;
+    return {
+      ...result,
+      operation,
+      detectedVersion: probedVersion,
+      supportedRange: supportedDshRangeLabel(),
+    };
+  } finally {
+    await lock.release();
+  }
+}
+
 async function syncDeepSeekHarnessIntegration(options = {}) {
   options = freezeDshOperationOptions(options);
   const operation = options.operation || "install";
@@ -2173,6 +2218,13 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
     if (removalResidueHealth) return managedProfileRemovalResidueResult(removalResidueHealth);
     const latch = await readInspectionLatch(options);
     if (latch && operation === "startup-sync") return inspectionLatchResult(latch);
+    // The Electron desktop app reserves its own profile and refuses the CLI, so
+    // once it is present the machine-level home patch is the only route that
+    // reaches it — and that route reaches every other profile too. It is taken
+    // before the CLI probe because a desktop-only machine has no CLI to probe.
+    if (await isDesktopTargetPresent(options)) {
+      return await syncHomePatchRegistration({ ...options, operation });
+    }
     if (!(await isDshInstalled(options))) {
       return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
     }
@@ -2728,11 +2780,20 @@ function registerDeepSeekHarness(options = {}) {
 }
 
 async function unregisterDeepSeekHarness(options = {}) {
+  // Both registration routes are torn down here: a host that switched routes
+  // must not be left with the other one still mounting the bridge.
+  const homePatchResult = await unregisterHomePatchBridge(options);
+  if (homePatchResult.status === "error") return homePatchResult;
   const result = await uninstallDeepSeekHarnessBridge(options);
   if (result.status === "error") return result;
-  return result.status === "ok"
-    ? { ...result, removed: true, skipped: false }
-    : { ...result, removed: false, skipped: true };
+  const homePatchRemoved = homePatchResult.action === "removed";
+  const removed = homePatchRemoved || result.status === "ok";
+  return {
+    ...result,
+    homePatchRemoved,
+    removed,
+    skipped: !removed,
+  };
 }
 
 async function isBridgeInstalled(options = {}) {
@@ -2762,7 +2823,7 @@ function resolveDesktopProfileDir(dshHome) {
 
 async function isDesktopTargetPresent(options = {}) {
   if (typeof options.desktopTargetPresent === "boolean") return options.desktopTargetPresent;
-  const dshHome = options.dshHome || resolveDshHome(options.env);
+  const dshHome = resolveCanonicalDshHome(options);
   return exists(path.join(resolveDesktopProfileDir(dshHome), "package.json"));
 }
 
@@ -2776,7 +2837,10 @@ function homePatchReferencePath(options = {}) {
  *   `block-malformed`, `marker-invalid`, or `unreadable`.
  */
 async function inspectHomePatchRegistration(options = {}) {
-  const dshHome = options.dshHome || resolveDshHome(options.env);
+  // Canonicalize on every path so the written block and the later inspection
+  // agree: a DSH home reached through a symlink (macOS /var -> /private/var)
+  // would otherwise compare as a foreign target.
+  const dshHome = resolveCanonicalDshHome(options);
   const patchPath = homePatch.resolveHomePatchPath(dshHome);
   const stableDir = homePatch.resolveStableBridgeDir(dshHome);
   const stableEntry = homePatch.resolveStableBridgeEntry(dshHome);
@@ -2791,7 +2855,7 @@ async function inspectHomePatchRegistration(options = {}) {
   const found = homePatch.findManagedBlock(content);
   if (found.malformed) return { ...base, status: "block-malformed" };
   if (!found.present) return { ...base, status: "absent" };
-  if (found.targetPath !== stableEntry) {
+  if (!homePatch.sameEntryPath(found.targetPath, stableEntry)) {
     return { ...base, status: "foreign-target", targetPath: found.targetPath };
   }
   const marker = await readJson(path.join(stableDir, MANIFEST_FILE));
@@ -2811,7 +2875,7 @@ async function inspectHomePatchRegistration(options = {}) {
  * Idempotent: the bytes are skipped when the marker already matches.
  */
 async function materializeStableBridge(bundle, options = {}) {
-  const dshHome = options.dshHome || resolveDshHome(options.env);
+  const dshHome = resolveCanonicalDshHome(options);
   const stableDir = options.stableDir || homePatch.resolveStableBridgeDir(dshHome);
   const contract = options.contract || dshContractForVersion(options.dshVersion) || PREFERRED_DSH_CONTRACT;
   const manifest = {
@@ -2879,6 +2943,42 @@ async function materializeStableBridge(bundle, options = {}) {
   }
 }
 
+/**
+ * Synchronous twin of {@link inspectHomePatchRegistration}, for the disk-only
+ * detection paths that cannot await.
+ */
+function inspectHomePatchRegistrationSync(options = {}) {
+  const fsImpl = options.fs || fs;
+  const dshHome = resolveCanonicalDshHome(options);
+  const patchPath = homePatch.resolveHomePatchPath(dshHome);
+  const stableDir = homePatch.resolveStableBridgeDir(dshHome);
+  const stableEntry = homePatch.resolveStableBridgeEntry(dshHome);
+  const base = { patchPath, stableDir, stableEntry };
+  let content = "";
+  try {
+    content = fsImpl.readFileSync(patchPath, "utf8");
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") {
+      return { ...base, status: "unreadable", message: err && err.message ? err.message : String(err) };
+    }
+  }
+  const found = homePatch.findManagedBlock(content);
+  if (found.malformed) return { ...base, status: "block-malformed" };
+  if (!found.present) return { ...base, status: "absent" };
+  if (!homePatch.sameEntryPath(found.targetPath, stableEntry, fsImpl)) {
+    return { ...base, status: "foreign-target", targetPath: found.targetPath };
+  }
+  const marker = readJsonSync(fsImpl, path.join(stableDir, MANIFEST_FILE));
+  const markerContract = marker ? dshContractForMarker(marker) : null;
+  if (!marker || marker.owner !== MANAGED_OWNER || !markerContract) {
+    return { ...base, status: "marker-invalid", marker };
+  }
+  if (hashBridgeDirectorySync(fsImpl, stableDir, markerContract) !== marker.bundleHash) {
+    return { ...base, status: "marker-invalid", marker, message: "managed bytes do not match their marker" };
+  }
+  return { ...base, status: "ok", marker };
+}
+
 async function writeHomePatchReference(patchPlan, options = {}) {
   const filePath = homePatchReferencePath(options);
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
@@ -2913,7 +3013,7 @@ async function clearHomePatchReference(options = {}) {
  *   result when the two registration routes would collide.
  */
 async function registerHomePatchBridge(options = {}) {
-  const dshHome = options.dshHome || resolveDshHome(options.env);
+  const dshHome = resolveCanonicalDshHome(options);
   // A profile bundle and a home entry would both mount the bridge, so this
   // route refuses to start while the profile route is live.
   if (options.skipCollisionCheck !== true) {
@@ -2965,7 +3065,10 @@ async function registerHomePatchBridge(options = {}) {
  * @returns `{ status, action }` where action is `removed`, `absent`, or `unchanged`.
  */
 async function unregisterHomePatchBridge(options = {}) {
-  const dshHome = options.dshHome || resolveDshHome(options.env);
+  // Canonicalize on every path so the written block and the later inspection
+  // agree: a DSH home reached through a symlink (macOS /var -> /private/var)
+  // would otherwise compare as a foreign target.
+  const dshHome = resolveCanonicalDshHome(options);
   const patchPath = homePatch.resolveHomePatchPath(dshHome);
   const stableDir = homePatch.resolveStableBridgeDir(dshHome);
   let content;
@@ -3009,6 +3112,7 @@ module.exports = {
   hasDshCommand,
   hasPnpm,
   inspectHomePatchRegistration,
+  inspectHomePatchRegistrationSync,
   isDesktopTargetPresent,
   registerHomePatchBridge,
   resolveDesktopProfileDir,
