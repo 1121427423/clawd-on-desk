@@ -26,6 +26,33 @@ test("DSH bridge maps only public session events and never copies tool arguments
     event: "PostToolUseFailure",
     state: "error",
   });
+  // 0.1.7-rc.2 / 0.2.0-rc.2 moved the flag to the message and dropped the
+  // `tool-result` content block; the event's `error` stays optional, so a
+  // failure can carry nothing but `message.isError`.
+  assert.deepStrictEqual(mapSessionEvent({
+    type: "tool/result",
+    data: { message: { content: [{ type: "text", text: "boom" }], isError: true } },
+  }), {
+    event: "PostToolUseFailure",
+    state: "error",
+  });
+  assert.deepStrictEqual(mapSessionEvent({
+    type: "tool/result",
+    data: { message: { content: [{ type: "text", text: "boom" }] } },
+  }), {
+    event: "PostToolUse",
+    state: "working",
+  });
+  assert.deepStrictEqual(mapSessionEvent({
+    type: "tool/result",
+    data: {
+      message: { content: [{ type: "text", text: "boom" }] },
+      error: { name: "ToolTimeoutError", code: "TOOL_TIMEOUT" },
+    },
+  }), {
+    event: "PostToolUseFailure",
+    state: "error",
+  });
   assert.deepStrictEqual(mapSessionEvent({ type: "turn/end", data: { reason: { kind: "error" } } }), {
     event: "StopFailure",
     state: "error",

@@ -654,7 +654,7 @@ test("npx-only hosts get an exact manual command and can later pass read-only ve
 });
 
 test("npx-only uninstall selects the exact contract recorded by each supported marker", async (t) => {
-  for (const version of ["0.1.5-rc.3", "0.1.5-rc.1", "0.1.1-rc.2", "0.1.0-rc.6"]) {
+  for (const version of ["0.2.0-rc.2", "0.1.7-rc.2", "0.1.5-rc.3", "0.1.5-rc.1", "0.1.1-rc.2", "0.1.0-rc.6"]) {
     const harness = makeHarness();
     const cli = makeOfficialCli(harness);
     t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
@@ -1895,15 +1895,20 @@ test("newer managed generations win and same-version hash conflicts require expl
 test("the verified-version table resolves only listed exact versions", () => {
   assert.deepStrictEqual(
     DSH_VERSION_CONTRACTS.map((contract) => contract.version),
-    ["0.1.5-rc.3", "0.1.5-rc.1", "0.1.1-rc.2", "0.1.0-rc.6"],
+    ["0.2.0-rc.2", "0.1.7-rc.2", "0.1.5-rc.3", "0.1.5-rc.1", "0.1.1-rc.2", "0.1.0-rc.6"],
   );
+  assert.strictEqual(isSupportedDshVersion("0.2.0-rc.2"), true);
+  assert.strictEqual(isSupportedDshVersion("0.1.7-rc.2"), true);
   assert.strictEqual(isSupportedDshVersion("0.1.5-rc.3"), true);
   assert.strictEqual(isSupportedDshVersion("0.1.5-rc.1"), true);
   assert.strictEqual(isSupportedDshVersion("0.1.1-rc.2"), true);
   assert.strictEqual(isSupportedDshVersion("0.1.0-rc.6"), true);
   assert.strictEqual(isSupportedDshVersion("0.1.0-rc.7"), false);
   assert.strictEqual(isSupportedDshVersion("0.2.0"), false);
-  assert.strictEqual(supportedDshRangeLabel(), "=0.1.5-rc.3 or =0.1.5-rc.1 or =0.1.1-rc.2 or =0.1.0-rc.6");
+  assert.strictEqual(
+    supportedDshRangeLabel(),
+    "=0.2.0-rc.2 or =0.1.7-rc.2 or =0.1.5-rc.3 or =0.1.5-rc.1 or =0.1.1-rc.2 or =0.1.0-rc.6",
+  );
   const metadata = readJson(path.join(SOURCE_DIR, "package.json")).clawd;
   assert.strictEqual(metadata.supportedDshRange, DSH_VERSION_CONTRACTS[0].supportedDshRange);
   assert.strictEqual(metadata.verifiedDshArtifact, DSH_VERSION_CONTRACTS[0].verifiedDshArtifact);

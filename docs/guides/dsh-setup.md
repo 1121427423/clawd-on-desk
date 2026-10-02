@@ -13,13 +13,15 @@ own npm artifact and integrity:
 
 | DSH version | npm artifact | npm integrity (sha512) |
 | --- | --- | --- |
-| `0.1.5-rc.3` (preferred for new installs) | `@deepseek-ai/dsh@0.1.5-rc.3` | `sha512-c0W6Xqc4ChjFcCJkbzPeIxZQdnbKqe+QAcJzWGtogg0ZzsnZRcw3vopMyZ5oZU6E2fmyqGcyDR1sBeiCH4yHcg==` |
+| `0.2.0-rc.2` (preferred for new installs) | `@deepseek-ai/dsh@0.2.0-rc.2` | `sha512-EAJ3gPNcVt/uv8X19PMm9NkVhWgT7xXNMk0UKCVm+IQ5rpSQOcsMUa0HWlnYYVybKMsccjcRB21vVVsaXQ6IdA==` |
+| `0.1.7-rc.2` | `@deepseek-ai/dsh@0.1.7-rc.2` | `sha512-SQFhriLvza8GnFApnC5/32AgpcyKxrWnYXhvwDOLJdgWpkCX2EexyR9c8kCkMITJXnFLEN3Qb2CEh0W36vkLyw==` |
+| `0.1.5-rc.3` | `@deepseek-ai/dsh@0.1.5-rc.3` | `sha512-c0W6Xqc4ChjFcCJkbzPeIxZQdnbKqe+QAcJzWGtogg0ZzsnZRcw3vopMyZ5oZU6E2fmyqGcyDR1sBeiCH4yHcg==` |
 | `0.1.5-rc.1` | `@deepseek-ai/dsh@0.1.5-rc.1` | `sha512-rmNmzQCg3oIc1z8xH7izRSOuy1TNzq+/NILyfM+7e8DKOyV+yBtg47WEsqR2SiIe1ATec3L/rUa1YhIcfQ2XEg==` |
 | `0.1.1-rc.2` | `@deepseek-ai/dsh@0.1.1-rc.2` | `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==` |
 | `0.1.0-rc.6` | `@deepseek-ai/dsh@0.1.0-rc.6` | `sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==` |
 
 Install and Repair select the contract matching the detected host (or the owned
-marker when no CLI probe is available); new installs prefer `0.1.5-rc.3`.
+marker when no CLI probe is available); new installs prefer `0.2.0-rc.2`.
 Uninstall and manual `npx` commands select the contract of the installed
 marker. Pre-release versions are exact-pinned — a broad `>=0.1.x` range would
 admit artifacts this bridge has not verified. The public seams were first
@@ -37,6 +39,19 @@ public seams (`session/created`, `session/event`, `session/disposed`, and the
 `approval/request` waterfall) plus the optional title and context-pressure
 projections in the published rc.3 artifact; a macOS real-machine run using the
 real Clawd UI followed (see below).
+The `0.1.7-rc.2` and `0.2.0-rc.2` rows were added after re-checking the same four
+public seams (`session/created`, `session/event`, `session/disposed`, and the
+`approval/request` waterfall) plus the optional title and context-pressure
+projections in both published artifacts. That check found one real break that
+rc.3 did not have: DSH moved the tool-result failure flag from the `tool-result`
+content block to the result message itself, and dropped `tool-result` from
+`ContentBlockMap`. The bridge's failure detection read only the content block,
+and the event's `error` field is optional (the loop attaches it only when
+`result.error.info` exists), so a failed tool result could be reported as a
+success. The bridge now probes `message.isError`, the legacy content block, and
+the event `error`, which keeps rc.6/rc.3 and the newer shape both working. Both
+new rows are static artifact checks only — neither has been exercised on a real
+DSH host (see the pending entry below).
 Unlisted versions fail before Clawd changes the DSH profile.
 
 ## Behavior
@@ -93,7 +108,7 @@ mode is enabled; per-session grants are not offered in this experimental release
 
 ## Requirements
 
-- DSH `0.1.5-rc.3` (preferred), `0.1.5-rc.1`, `0.1.1-rc.2`, or `0.1.0-rc.6` on the same machine.
+- DSH `0.2.0-rc.2` (preferred), `0.1.7-rc.2`, `0.1.5-rc.3`, `0.1.5-rc.1`, `0.1.1-rc.2`, or `0.1.0-rc.6` on the same machine.
 - The `web` profile.
 - `pnpm`, because the official DSH plugin command delegates profile mutation to
   pnpm.
@@ -127,9 +142,9 @@ or cleanup could delete.
 
 If DSH is only used through `npx`, Clawd does not download it automatically.
 Settings returns an exact manual `npx @deepseek-ai/dsh@<contract> plugin ... add`
-command (the contract matching the staged generation — `0.1.5-rc.3` for a
+command (the contract matching the staged generation — `0.2.0-rc.2` for a
 preferred-contract install, or the marker's own version
-`0.1.5-rc.1`, `0.1.1-rc.2`, or `0.1.0-rc.6` otherwise) pointing at the staged managed generation and explicitly setting the
+`0.1.7-rc.2`, `0.1.5-rc.3`, `0.1.5-rc.1`, `0.1.1-rc.2`, or `0.1.0-rc.6` otherwise) pointing at the staged managed generation and explicitly setting the
 canonical target `DSH_HOME` (PowerShell on Windows, POSIX environment-prefix
 syntax elsewhere). This keeps an alternate home from accidentally mutating the
 default `~/.dsh` when the command is pasted into a fresh terminal. After that command succeeds,
@@ -209,7 +224,7 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
   lifecycle, including no-CLI commands
   ([#938](https://github.com/rullerzhou-afk/clawd-on-desk/pull/938)).
   Automated installer coverage includes rc.1 installation, rc.3 installation,
-  first install below
+  rc.2 (0.1.7) and rc.2 (0.2.0) installation, first install below
   a symlinked parent, rc.6 retention, rc.2 installation, cross-contract
   generation migration, and unlisted-version rejection.
 - On 2026-09-23, a **macOS rc.1 source-run** used isolated `HOME` and `DSH_HOME`,
@@ -256,6 +271,10 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
   Uninstall, DND, or the HTTP 204 hand-back and cancellation paths; the last two
   were exercised against a mock endpoint in the 2026-09-23 rc.1 run and were not
   retested on rc.3.
+- Real-machine runs for **0.1.7-rc.2** and **0.2.0-rc.2** have not been performed
+  yet, so both are static artifact checks only. The tool-result failure-flag
+  incompatibility they share is covered by unit tests, not by a live host.
+  <!-- 0.1.7-rc.2 / 0.2.0-rc.2 real-machine result: pending -->
 - Linux, WSL, remote SSH, non-web profiles, macOS packaging, and ARM64 packaging
   remain unverified.
 - There is no terminal-focus action because DSH web is a browser surface.

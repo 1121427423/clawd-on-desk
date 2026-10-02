@@ -114,10 +114,17 @@ export function mapSessionEvent(event) {
     return { event: 'PreToolUse', state: 'working', toolName: event?.data?.name }
   }
   if (type === 'tool/result') {
-    const content = event?.data?.message?.content
-    const failed = Boolean(event?.data?.error) || (
-      Array.isArray(content) && content.some((item) => item?.isError === true)
-    )
+    const message = event?.data?.message
+    const content = message?.content
+    // DSH moved the failure flag from the tool-result content block to the
+    // message itself in 0.1.7 (0.1.5-rc.3 and earlier: content[0].isError;
+    // 0.1.7-rc.2 and 0.2.0-rc.2: message.isError, with ContentBlockMap no
+    // longer carrying a `tool-result` block). The event's `error` is optional —
+    // the loop only attaches it when result.error.info exists — so the message
+    // flag is the authoritative signal and all three shapes are probed.
+    const failed = Boolean(event?.data?.error)
+      || message?.isError === true
+      || (Array.isArray(content) && content.some((item) => item?.isError === true))
     return failed
       ? { event: 'PostToolUseFailure', state: 'error' }
       : { event: 'PostToolUse', state: 'working' }
