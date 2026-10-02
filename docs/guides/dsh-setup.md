@@ -249,6 +249,15 @@ bridge. `detectAgentInstallations` reports the machine-level route as Clawd
 integration (`reason: home-patch`), so Settings and Doctor show it as connected
 even though no profile carries the dependency.
 
+A host that already carries the profile registration is reported as
+`migration-required` rather than switched automatically. Removing a
+registration from the user's own DSH profile is a destructive change to their
+host, so it waits for an explicit action — `dsh-install.js
+--migrate-registration`, or the equivalent Settings/Doctor action. That
+migration removes the profile route first and only writes the home patch once
+the removal succeeded; a failed removal leaves the original route untouched
+rather than risking both routes live at once.
+
 The mechanism was verified on 2026-10-02 by writing the block and running
 `dsh --profile web --dump-config`, which composed `clawd-bridge` with its
 absolute path rewritten to a `file://` URL. Composing the `desktop` profile

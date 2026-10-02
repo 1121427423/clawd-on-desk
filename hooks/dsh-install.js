@@ -6,6 +6,7 @@ const fsp = fs.promises;
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const { pathToFileURL } = require("url");
 const { spawn } = require("child_process");
 const { asarUnpackedPath } = require("./json-utils");
 const { resolveNodeBinAsync } = require("./server-config");
@@ -16,6 +17,9 @@ const WEB_PROFILE_NAME = "web";
 // Reserved by the Electron desktop app; `dsh plugin --profile desktop` refuses
 // to touch it, which is why the machine-level home patch exists.
 const DESKTOP_PROFILE_NAME = "desktop";
+// The composed profile root DSH rewrites whenever it composes a profile tree,
+// including a read-only-looking `--dump-config`.
+const PROFILE_ROOT_FILE = "cordis.yml";
 const DSH_RESTART_HINT = "DeepSeek Harness bridge verified on disk. Restart any running dsh web process to load this plugin generation.";
 const MANAGED_OWNER = "clawd-on-desk";
 const MANIFEST_FILE = "clawd-manifest.json";
@@ -2781,16 +2785,26 @@ function registerDeepSeekHarness(options = {}) {
 
 async function unregisterDeepSeekHarness(options = {}) {
   // Both registration routes are torn down here: a host that switched routes
-  // must not be left with the other one still mounting the bridge.
+  // must not be left with the other one still mounting the bridge. A failure on
+  // the machine-level route degrades to a warning rather than stopping the
+  // profile teardown — a damaged home patch must not make the bundle
+  // un-uninstallable.
   const homePatchResult = await unregisterHomePatchBridge(options);
-  if (homePatchResult.status === "error") return homePatchResult;
   const result = await uninstallDeepSeekHarnessBridge(options);
-  if (result.status === "error") return result;
-  const homePatchRemoved = homePatchResult.action === "removed";
+  const homePatchWarning = homePatchResult.status === "error"
+    ? { reason: homePatchResult.reason, message: homePatchResult.message }
+    : (homePatchResult.residualStableDir
+      ? { reason: "stable-dir-not-owned", message: homePatchResult.warning }
+      : null);
+  if (result.status === "error") {
+    return homePatchWarning ? { ...result, homePatchWarning } : result;
+  }
+  const homePatchRemoved = homePatchResult.status === "ok" && homePatchResult.action === "removed";
   const removed = homePatchRemoved || result.status === "ok";
   return {
     ...result,
     homePatchRemoved,
+    ...(homePatchWarning ? { homePatchWarning } : {}),
     removed,
     skipped: !removed,
   };
@@ -3007,32 +3021,356 @@ async function clearHomePatchReference(options = {}) {
   }
 }
 
+/** Whether the stable directory is Clawd's own, by marker and by bytes. */
+async function isOwnedStableDir(stableDir, options = {}) {
+  const marker = await readJson(path.join(stableDir, MANIFEST_FILE));
+  const markerContract = marker ? dshContractForMarker(marker) : null;
+  if (!marker || marker.owner !== MANAGED_OWNER || !markerContract) return false;
+  return (await hashBridgeDirectory(stableDir, markerContract)) === marker.bundleHash;
+}
+
+/**
+ * The profile a composition check may safely compose: one that already exists
+ * and that the CLI is allowed to touch. `desktop` is excluded because
+ * `dsh --profile desktop` is refused outright, so composing it is impossible —
+ * which is exactly why the check must fall back to something else rather than
+ * silently testing nothing on a desktop-only machine.
+ */
+async function resolveComposableProfileNames(dshHome) {
+  const profilesDir = path.join(dshHome, "profiles");
+  let entries;
+  try {
+    entries = await fsp.readdir(profilesDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const names = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === DESKTOP_PROFILE_NAME) continue;
+    // A profile name the CLI would refuse must never become a candidate: its
+    // dump would fail for a reason that says nothing about our own write.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(entry.name)) continue;
+    const dir = path.join(profilesDir, entry.name);
+    const initialized = (await exists(path.join(dir, "package.json")))
+      && ((await exists(path.join(dir, PROFILE_ROOT_FILE)))
+        || (await exists(path.join(dir, "cordis.patch.yml"))));
+    if (initialized) names.push(entry.name);
+  }
+  return names.sort((left, right) => {
+    if (left === WEB_PROFILE_NAME) return -1;
+    if (right === WEB_PROFILE_NAME) return 1;
+    return left.localeCompare(right);
+  });
+}
+
+/**
+ * Prove the entry Clawd registered is actually loadable.
+ *
+ * This is the host-independent half of the boot proof: composing the profile
+ * tree can only be done where a CLI and a composable profile exist, but this
+ * check runs everywhere — including the desktop-only host this route exists
+ * for, where `--dump-config` is impossible. It covers the only failures Clawd
+ * itself can introduce: a path that does not resolve to a file, and a module
+ * that does not load or does not export `apply`.
+ * @returns `{ ok }` or `{ ok: false, message }`.
+ */
+async function verifyHomePatchEntry(entryPath, options = {}) {
+  if (typeof options.verifyEntryImpl === "function") {
+    return await options.verifyEntryImpl(entryPath, options);
+  }
+  let stat;
+  try {
+    stat = await fsp.lstat(entryPath);
+  } catch {
+    return { ok: false, message: `the registered bridge entry does not exist: ${entryPath}` };
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    return { ok: false, message: `the registered bridge entry is not a regular file: ${entryPath}` };
+  }
+  let loaded;
+  try {
+    // ESM caches by URL, and the stable directory keeps the same path across
+    // content changes — so a re-verification in one process could be handed the
+    // previously imported module. A content-addressed query keeps the check
+    // tied to the bytes actually on disk.
+    const cacheKey = typeof options.cacheKey === "string" && options.cacheKey
+      ? `?clawd=${encodeURIComponent(options.cacheKey)}`
+      : "";
+    loaded = await import(`${pathToFileURL(entryPath).href}${cacheKey}`);
+  } catch (err) {
+    return {
+      ok: false,
+      message: `the registered bridge entry could not be imported: ${err && err.message ? err.message : String(err)}`,
+    };
+  }
+  const apply = loaded.apply || loaded.default;
+  if (typeof apply !== "function") {
+    return { ok: false, message: `the registered bridge entry does not export apply(): ${entryPath}` };
+  }
+  return { ok: true };
+}
+
+/**
+ * Undo the profile root file the compose rewrote — or created — and report it
+ * when undoing fails: a silently lost user edit is the exact outcome the
+ * snapshot exists to prevent, so a failed restore must not be swallowed.
+ * @returns a warning string, or null when there was nothing to undo.
+ */
+async function restoreProfileRoot(rootPath, rootBefore, rootAfter, fspImpl = fsp) {
+  if (rootBefore === rootAfter) return null;
+  try {
+    if (rootBefore === null) {
+      // The compose created a file that was not there before; leaving it would
+      // make the validation a mutation.
+      await fspImpl.rm(rootPath, { force: true });
+    } else {
+      await fspImpl.writeFile(rootPath, rootBefore, { mode: 0o600 });
+    }
+    return null;
+  } catch (err) {
+    return `Composing the profile changed ${rootPath} and restoring it failed: ${err && err.message ? err.message : String(err)}`;
+  }
+}
+
+async function readTextFileOrNull(filePath, fspImpl = fsp) {
+  try {
+    return await fspImpl.readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prove the composed tree still boots before Clawd keeps its write.
+ *
+ * A malformed home patch breaks the boot of every profile, so this is the last
+ * line of defence after the structural checks. Two properties matter:
+ *
+ * - It composes whichever profile already exists, not just `web`, because the
+ *   desktop-owned host this route exists for may have no web profile at all.
+ * - `--dump-config` is not read-only: composing rewrites the profile root file.
+ *   Whatever the user had there is captured first and restored after, so
+ *   validating our own write never costs them their own bytes.
+ * @returns `{ ok }`, or `{ ok: true, skipped, reason, warning }` when it could
+ *   not run — a skip is reported, never silent.
+ */
+async function validateHomePatchComposition(options = {}) {
+  if (typeof options.validateCompositionImpl === "function") {
+    return await options.validateCompositionImpl(options);
+  }
+  const dshHome = resolveCanonicalDshHome(options);
+  const candidates = await resolveComposableProfileNames(dshHome);
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "no-composable-profile",
+      warning: "No DSH profile could be composed to verify the machine-level registration",
+    };
+  }
+  const commandInfo = options.commandInfo || await resolveDshCommand(options);
+  if (!commandInfo) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "cli-unavailable",
+      warning: "No dsh CLI was available to verify the machine-level registration",
+    };
+  }
+  // `web` is the profile the CLI is built around: a failure there is a real
+  // verdict. Any other candidate is a fallback, so an inconclusive result from
+  // one must not roll back a write the canonical profile would have accepted.
+  let fallback = null;
+  for (const profileName of candidates) {
+    const attempt = await composeProfileOnce(profileName, { ...options, dshHome, commandInfo });
+    if (attempt.ok) return { ok: true, profileName, ...attempt.restoreFields };
+    // An inconclusive attempt never contradicts the write, whichever profile it
+    // came from — the output cap losing the verdict is not a boot failure.
+    if (attempt.inconclusive === true) {
+      fallback = { profileName, ...attempt };
+      continue;
+    }
+    if (profileName === WEB_PROFILE_NAME) return { ok: false, profileName, ...attempt };
+    fallback = { profileName, ...attempt };
+  }
+  return {
+    ok: true,
+    skipped: true,
+    reason: "composition-inconclusive",
+    warning: fallback
+      ? `No profile could be composed to verify the machine-level registration (${fallback.profileName}: ${fallback.message})`
+      : "No profile could be composed to verify the machine-level registration",
+  };
+}
+
+/**
+ * One composition attempt against one profile, restoring the profile root file
+ * it disturbs.
+ * @returns `{ ok: true, restoreFields }` or `{ ok: false, message, restoreFields }`.
+ */
+async function composeProfileOnce(profileName, options) {
+  const dshHome = resolveCanonicalDshHome(options);
+  const fspImpl = options.fsp || fsp;
+  const rootPath = path.join(dshHome, "profiles", profileName, PROFILE_ROOT_FILE);
+  const rootBefore = await readTextFileOrNull(rootPath, fspImpl);
+  const result = await runDshCommand(["--profile", profileName, "--dump-config"], {
+    ...options,
+    timeoutMs: 30000,
+  });
+  const rootAfter = await readTextFileOrNull(rootPath, fspImpl);
+  const restoreWarning = await restoreProfileRoot(rootPath, rootBefore, rootAfter, fspImpl);
+  const restoreFields = restoreWarning ? { rootRestoreFailed: true, warning: restoreWarning } : {};
+  if (result.code === 0) return { ok: true, restoreFields };
+  // The output cap kills the child, which loses the verdict rather than
+  // contradicting it — that is a measurement failure, not a boot failure.
+  if (result.outputLimited === true) {
+    return {
+      ok: false,
+      inconclusive: true,
+      message: "dsh --dump-config exceeded the output cap before it could report",
+      ...restoreFields,
+    };
+  }
+  return {
+    ok: false,
+    message: (result.stderr || result.stdout || "dsh --dump-config failed").trim().slice(0, 500),
+    ...restoreFields,
+  };
+}
+
+/** Put the patch file back the way it was before a write that did not validate. */
+async function rollbackHomePatchWrite(patchPath, write, options = {}) {
+  const fspImpl = options.fsp || fsp;
+  try {
+    if (write && write.backupPath) {
+      const backup = await fspImpl.readFile(write.backupPath, "utf8");
+      await fspImpl.writeFile(patchPath, backup, { mode: 0o600 });
+      return true;
+    }
+    await fspImpl.rm(patchPath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Move the bridge from the profile route to the machine-level route.
+ *
+ * Explicit by design: this is the only path that removes a registration the
+ * user already had, so it never runs from a sync. If the profile teardown
+ * fails it aborts without writing the home patch — both routes live at once
+ * would mount the bridge twice and double every state event.
+ */
+async function migrateHomePatchRegistration(options = {}) {
+  const dshHome = resolveCanonicalDshHome(options);
+  const bundled = inspectDeepSeekHarnessDiskSync({ ...options, dshHome });
+  const profileRouteLive = Boolean(
+    bundled
+    && (bundled.status === "healthy"
+      || (bundled.dependencyPresent === true && bundled.bundlePresent === true))
+  );
+  if (!profileRouteLive) {
+    return {
+      status: "skipped",
+      reason: "no-profile-route",
+      message: "No profile registration needed migrating",
+    };
+  }
+  // Each step takes the on-disk mutation lock itself, so this sequence must not
+  // hold it. The window between the two is safe: a concurrent sync that sees no
+  // profile bundle simply registers the same machine-level entry, and the
+  // second registration is idempotent.
+  const removal = await uninstallDeepSeekHarnessBridge(options);
+  if (removal.status === "error") {
+    return {
+      status: "error",
+      reason: "migration-blocked",
+      message: `Refusing to add the machine-level registration while the profile registration could not be removed: ${removal.message || removal.reason}`,
+      manualInspectionRequired: true,
+    };
+  }
+  const registered = await registerHomePatchBridge({ ...options, dshHome });
+  if (registered.status !== "ok") return { ...registered, migrated: false };
+  return { ...registered, migrated: true, profileRouteRemoved: true };
+}
+
 /**
  * Register the bridge through the machine-level home patch.
+ *
+ * Order matters here: the inspect gate and the pure plan both run before
+ * anything is written, so a host Clawd must not touch is never half-mutated,
+ * and a patch that cannot be edited never costs the previous stable copy.
  * @returns `{ status, action, patchPath, stableDir, backupPath }` or an error
- *   result when the two registration routes would collide.
+ *   result when the routes would collide or the host needs manual inspection.
  */
 async function registerHomePatchBridge(options = {}) {
   const dshHome = resolveCanonicalDshHome(options);
   // A profile bundle and a home entry would both mount the bridge, so this
-  // route refuses to start while the profile route is live.
+  // route refuses to start while the profile route is live. The disk health
+  // vocabulary is "healthy" (not this module's "ok"), and a bundle row plus a
+  // resolved dependency is what actually makes the plugin load — so both are
+  // checked rather than a single status name.
   if (options.skipCollisionCheck !== true) {
     const bundled = inspectDeepSeekHarnessDiskSync({ ...options, dshHome });
-    if (bundled && bundled.status === "ok") {
+    const profileRouteLive = Boolean(
+      bundled
+      && (bundled.status === "healthy"
+        || (bundled.dependencyPresent === true && bundled.bundlePresent === true))
+    );
+    if (profileRouteLive) {
       return {
         status: "error",
-        reason: "bundle-already-registered",
-        message: "The Clawd bridge is already registered as a profile bundle; remove it before switching to the machine-level registration",
+        reason: "migration-required",
+        // Deliberately not automatic. Removing a registration from the user's
+        // own DSH profile is a destructive change to their host, so it waits
+        // for an explicit action — Settings/Doctor, or
+        // `dsh-install.js --migrate-registration` — instead of happening on a
+        // startup sync.
+        migrationRequired: true,
+        suggestedAction: "migrate-registration",
+        profileDir: bundled.profileDir,
+        message: "The Clawd bridge is registered through the DSH profile route; it must be migrated to the machine-level registration before that route can take over",
       };
     }
   }
   const patchPath = homePatch.resolveHomePatchPath(dshHome);
   const stableEntry = homePatch.resolveStableBridgeEntry(dshHome);
-  const bundle = await readSourceBundle(options);
-  const contract = options.contract
-    || dshContractForVersion(options.dshVersion)
-    || PREFERRED_DSH_CONTRACT;
-  const materialized = await materializeStableBridge(bundle, { ...options, contract, stableDir: path.dirname(path.dirname(stableEntry)) });
+  const stableDir = path.dirname(path.dirname(stableEntry));
+
+  // Never rewrite a state that inspection calls foreign or unreadable. A stale
+  // marker of our own is the one exception: that is a previous install whose
+  // bytes changed, which this call exists to refresh. Claiming that exception
+  // takes more than the marker's own `owner` field — that file lives inside the
+  // directory being replaced, so on its own it would let a forged marker
+  // authorise deleting whatever sits there. The reference Clawd wrote outside
+  // the directory is what proves authorship.
+  const health = await inspectHomePatchRegistration({ ...options, dshHome });
+  const savedReference = health.reference;
+  const referenceProvesAuthorship = Boolean(
+    savedReference
+    && savedReference.owner === MANAGED_OWNER
+    && savedReference.registration === "home-patch"
+    && homePatch.sameEntryPath(savedReference.stableEntry, stableEntry, options.fs || fs)
+  );
+  const refreshable = health.status === "marker-invalid"
+    && health.marker
+    && health.marker.owner === MANAGED_OWNER
+    && referenceProvesAuthorship;
+  if (health.status !== "absent" && health.status !== "ok" && !refreshable) {
+    return {
+      status: "error",
+      reason: health.status,
+      message: `The machine-level DSH registration needs manual inspection (${health.status})`,
+      manualInspectionRequired: true,
+      patchPath,
+      stableDir,
+      targetPath: health.targetPath,
+    };
+  }
+
+  // Plan the pure part first: this is the only step that can refuse the write
+  // on the user's own content, and it must cost nothing when it does.
   let content;
   try {
     content = await homePatch.readHomePatchFile(patchPath);
@@ -3045,7 +3383,40 @@ async function registerHomePatchBridge(options = {}) {
   } catch (err) {
     return { status: "error", reason: "patch-not-editable", message: err && err.message ? err.message : String(err) };
   }
+
+  const bundle = await readSourceBundle(options);
+  const contract = options.contract
+    || dshContractForVersion(options.dshVersion)
+    || PREFERRED_DSH_CONTRACT;
+  const materialized = await materializeStableBridge(bundle, { ...options, contract, stableDir });
   const write = await homePatch.writeHomePatchFile(patchPath, plan);
+
+  // Prove the entry loads everywhere, then — only where a CLI and a composable
+  // profile exist — prove the composed tree still boots. A write that changed
+  // nothing needs neither: an idempotent sync must not spawn a `dsh` process or
+  // touch the profile root file on every start.
+  const entryCheck = await verifyHomePatchEntry(stableEntry, { ...options, cacheKey: bundle.bundleHash });
+  const validation = !entryCheck.ok
+    ? { ok: false, reason: "entry-verification-failed", message: entryCheck.message }
+    : (write.action === "unchanged"
+      ? { ok: true, skipped: true, reason: "unchanged" }
+      : await validateHomePatchComposition({ ...options, dshHome }));
+  if (!validation.ok) {
+    const rolledBack = await rollbackHomePatchWrite(patchPath, write, options);
+    return {
+      status: "error",
+      reason: validation.reason || "patch-validation-failed",
+      message: validation.reason === "entry-verification-failed"
+        ? `The Clawd bridge entry Clawd registered is not loadable: ${validation.message}`
+        : `The composed DSH profile tree no longer boots after registering the Clawd bridge: ${validation.message}`,
+      manualInspectionRequired: true,
+      patchPath,
+      stableDir,
+      rolledBack,
+      ...(validation.warning ? { compositionValidationWarning: validation.warning } : {}),
+    };
+  }
+
   const reference = await writeHomePatchReference({ patchPath, stableEntry }, options);
   return {
     status: "ok",
@@ -3056,6 +3427,9 @@ async function registerHomePatchBridge(options = {}) {
     backupPath: write.backupPath,
     created: materialized.created,
     reference,
+    ...(validation.skipped ? { compositionValidationSkipped: validation.reason } : {}),
+    ...(validation.warning ? { compositionValidationWarning: validation.warning } : {}),
+    entryVerified: entryCheck.ok,
     message: DSH_RESTART_HINT,
   };
 }
@@ -3085,10 +3459,30 @@ async function unregisterHomePatchBridge(options = {}) {
   }
   const write = await homePatch.writeHomePatchFile(patchPath, plan);
   await clearHomePatchReference(options);
-  if (options.keepStableDir !== true) {
-    try { await fsp.rm(stableDir, { recursive: true, force: true }); } catch {}
+  // Deleting recursively is only safe for a directory Clawd can prove is its
+  // own. A foreign occupant at this path is left alone and reported instead —
+  // the same rule the profile route applies to a foreign same-name package.
+  let residualStableDir = false;
+  if (options.keepStableDir !== true && (await exists(stableDir))) {
+    if (await isOwnedStableDir(stableDir, options)) {
+      await fsp.rm(stableDir, { recursive: true, force: true });
+    } else {
+      residualStableDir = true;
+    }
   }
-  return { status: "ok", action: write.action, patchPath, stableDir, backupPath: write.backupPath };
+  return {
+    status: "ok",
+    action: write.action,
+    patchPath,
+    stableDir,
+    backupPath: write.backupPath,
+    ...(residualStableDir
+      ? {
+        residualStableDir: true,
+        warning: `Kept ${stableDir}: it is not a Clawd-owned stable bridge copy`,
+      }
+      : {}),
+  };
 }
 
 module.exports = {
@@ -3114,6 +3508,7 @@ module.exports = {
   inspectHomePatchRegistration,
   inspectHomePatchRegistrationSync,
   isDesktopTargetPresent,
+  migrateHomePatchRegistration,
   registerHomePatchBridge,
   resolveDesktopProfileDir,
   unregisterHomePatchBridge,
@@ -3158,15 +3553,19 @@ module.exports = {
     readSourceBundle,
     runCommand,
     supportedDshRangeLabel,
+    verifyHomePatchEntry,
   },
 };
 
 if (require.main === module) {
   const uninstall = process.argv.includes("--uninstall") || process.argv.includes("--uninstall-bridge");
+  const migrate = process.argv.includes("--migrate-registration");
   const operation = process.argv.includes("--repair") ? "explicit-repair" : "install";
-  Promise.resolve(uninstall
-    ? unregisterDeepSeekHarness({ silent: false })
-    : syncDeepSeekHarnessIntegration({ silent: false, operation }))
+  Promise.resolve(migrate
+    ? migrateHomePatchRegistration({ silent: false })
+    : uninstall
+      ? unregisterDeepSeekHarness({ silent: false })
+      : syncDeepSeekHarnessIntegration({ silent: false, operation }))
     .then((result) => {
       if (result && result.status === "error") {
         console.error(result.message || result.reason || "DeepSeek Harness integration failed");
