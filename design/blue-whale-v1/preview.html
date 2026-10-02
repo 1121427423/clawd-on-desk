@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#071a2c">
+  <title>蓝鲸主题 · 动画预览 v1</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #e9f8fb;
+      --muted: #9bb9c8;
+      --line: rgba(149, 207, 223, .13);
+      --sea: #0d2d45;
+      --cyan: #7cdae7;
+      --mint: #8fe0c2;
+      --gold: #f4c66a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse at 78% -5%, rgba(36, 112, 145, .34), transparent 36rem),
+        radial-gradient(ellipse at 8% 45%, rgba(25, 82, 112, .22), transparent 32rem),
+        #071a2c;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    button { font: inherit; }
+    .shell { max-width: 1320px; margin: 0 auto; padding: 34px 34px 56px; }
+    .topline { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 30px; }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-mark { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid rgba(137, 220, 231, .2); border-radius: 15px; background: rgba(40, 116, 143, .18); box-shadow: inset 0 1px rgba(255,255,255,.06); }
+    .brand-mark svg { width: 26px; height: 26px; }
+    .eyebrow { margin: 0 0 4px; color: var(--cyan); font-size: 10px; font-weight: 800; letter-spacing: .22em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(21px, 3vw, 28px); font-weight: 720; letter-spacing: -.035em; }
+    .version-pill { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 999px; color: #bbd7df; background: rgba(12, 37, 56, .62); font-size: 12px; white-space: nowrap; }
+    .version-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 12px rgba(143, 224, 194, .8); }
+    .intro { max-width: 760px; margin-bottom: 23px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+    .intro strong { color: #d9f6fa; font-weight: 650; }
+    .showcase { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(270px, .8fr); gap: 16px; }
+    .stage, .detail { min-height: 350px; overflow: hidden; border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(145deg, rgba(15, 47, 68, .88), rgba(8, 29, 47, .9)); box-shadow: 0 24px 70px rgba(0,0,0,.18), inset 0 1px rgba(255,255,255,.035); }
+    .stage { position: relative; display: grid; place-items: center; isolation: isolate; }
+    .stage::before, .stage::after { content: ""; position: absolute; z-index: -1; pointer-events: none; }
+    .stage::before { inset: 0; opacity: .6; background-image: radial-gradient(circle, rgba(147, 220, 229, .23) 1px, transparent 1.7px); background-size: 34px 34px; mask-image: linear-gradient(115deg, transparent, #000 35%, transparent 83%); }
+    .stage::after { width: 420px; height: 190px; right: -30px; bottom: -118px; border: 1px solid rgba(105, 190, 207, .16); border-radius: 50%; box-shadow: 0 -17px 0 -16px rgba(105, 190, 207, .2), 0 -34px 0 -33px rgba(105, 190, 207, .14); transform: rotate(-8deg); }
+    .stage-glow { position: absolute; width: 250px; height: 170px; border-radius: 50%; background: rgba(66, 157, 183, .18); filter: blur(50px); }
+    .stage-whale { position: relative; width: min(70%, 365px); height: auto; aspect-ratio: 1; object-fit: contain; transform: translateY(-27%); filter: drop-shadow(0 20px 22px rgba(0,0,0,.18)); }
+    .stage-corner { position: absolute; top: 18px; left: 20px; display: flex; align-items: center; gap: 8px; color: #a7c6d3; font-size: 11px; letter-spacing: .06em; }
+    .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 10px rgba(143,224,194,.7); }
+    .stage-controls { position: absolute; right: 16px; bottom: 16px; display: flex; gap: 8px; }
+    .control { min-height: 34px; padding: 0 12px; border: 1px solid rgba(155, 207, 219, .17); border-radius: 11px; color: #d9edf1; background: rgba(6, 27, 43, .72); cursor: pointer; font-size: 11px; transition: border-color .18s, background .18s, transform .18s; }
+    .control:hover { border-color: rgba(124, 218, 231, .48); background: rgba(19, 62, 83, .82); transform: translateY(-1px); }
+    .detail { display: flex; flex-direction: column; justify-content: center; padding: 27px; }
+    .detail-kicker { margin: 0 0 12px; color: var(--cyan); font-size: 10px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
+    .detail h2 { margin: 0 0 9px; font-size: 24px; letter-spacing: -.03em; }
+    .detail-copy { min-height: 47px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .detail-meta { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 18px; }
+    .tag { padding: 6px 9px; border: 1px solid rgba(150, 205, 218, .13); border-radius: 999px; color: #b8d3dc; background: rgba(19, 56, 77, .48); font-size: 10px; }
+    .filename { margin-top: 17px; color: #7899aa; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 18px; margin: 34px 0 15px; }
+    .section-head h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
+    .section-head p { margin: 5px 0 0; color: #84a5b4; font-size: 11px; }
+    .state-count { color: #82a8b9; font-size: 11px; white-space: nowrap; }
+    .filters { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+    .filter { padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; color: #98b4c1; background: rgba(13, 39, 58, .62); cursor: pointer; font-size: 11px; transition: .18s; }
+    .filter:hover { color: #e6f8fb; border-color: rgba(124,218,231,.35); }
+    .filter.active { color: #062235; border-color: transparent; background: linear-gradient(135deg, #8be0e7, #8ddfca); font-weight: 750; }
+    .grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+    .state-card { min-width: 0; padding: 10px; border: 1px solid rgba(145, 198, 211, .1); border-radius: 15px; background: rgba(10, 34, 52, .58); cursor: pointer; text-align: left; transition: border-color .18s, background .18s, transform .18s, box-shadow .18s; }
+    .state-card:hover { border-color: rgba(124,218,231,.3); background: rgba(18, 54, 74, .76); transform: translateY(-2px); }
+    .state-card.selected { border-color: rgba(124,218,231,.65); background: rgba(20, 64, 83, .76); box-shadow: 0 0 0 2px rgba(124,218,231,.08); }
+    .thumb { display: grid; place-items: center; height: 106px; overflow: hidden; border-radius: 10px; background: radial-gradient(ellipse at 50% 57%, rgba(62,142,166,.2), transparent 60%), rgba(6,25,41,.63); }
+    .thumb img { width: 100%; height: 100%; object-fit: contain; transform: translateY(-27%); }
+    .card-label { display: block; margin: 9px 1px 0; overflow: hidden; color: #d1e5e9; font-size: 11px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+    .card-group { display: block; margin: 4px 1px 0; color: #7796a6; font-size: 9px; }
+    .footer-note { margin-top: 22px; padding-top: 15px; border-top: 1px solid var(--line); color: #6f8c9b; font-size: 10px; line-height: 1.6; }
+    .empty { grid-column: 1 / -1; padding: 30px; color: var(--muted); text-align: center; }
+    @media (max-width: 920px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } .showcase { grid-template-columns: minmax(0, 1.1fr) minmax(250px, .9fr); } }
+    @media (max-width: 700px) { .shell { padding: 23px 16px 40px; } .topline { margin-bottom: 22px; } .showcase { grid-template-columns: 1fr; } .stage { min-height: 300px; } .detail { min-height: 0; padding: 21px; } .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .section-head { align-items: start; flex-direction: column; } }
+    @media (max-width: 430px) { .version-pill { display: none; } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .stage-whale { width: 77%; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topline">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none"><path d="M5 17.5c2.5-5.3 7.2-8 13.7-7.8 3.7.1 6.3 1.5 8.3 4.1l-2 2.2 2 1.9c-2.8 3.4-6.3 5-10.7 4.8-5.3-.3-9-2-11.3-5.2Z" fill="#58aec3"/><path d="m6 17.5-3-3 .8 3-1.1 3.1 3.4-2.3" fill="#286f8d"/><path d="m12 11 1.7-3L16 11" fill="#286f8d"/><path d="M17 19.5c1.7 1.4 3.4 1.3 4.7.2" stroke="#173b52" stroke-width="1.3" stroke-linecap="round"/><circle cx="21.4" cy="15.3" r="1.15" fill="#173b52"/><circle cx="21.8" cy="14.9" r=".3" fill="#d7faf8"/></svg>
+        </div>
+        <div><p class="eyebrow">SVG ANIMATION STUDY · V1</p><h1>蓝鲸主题 · 动画预览</h1></div>
+      </div>
+      <div class="version-pill">完整状态草案 · 33 个独立 SVG</div>
+    </header>
+
+    <p class="intro">基于项目现有桌宠动画结构绘制的<strong>原创像素风蓝鲸</strong>。这里包含主状态、完整睡眠流程、并行工作档位、迷你模式和点击反应；点击下方卡片可以切换大图预览。</p>
+
+    <section class="showcase" aria-label="当前动画预览">
+      <div class="stage">
+        <div class="stage-glow"></div>
+        <div class="stage-corner"><span class="live-dot"></span><span>LIVE SVG PREVIEW</span></div>
+        <img class="stage-whale" id="stageWhale" src="assets/whale-idle.svg" alt="蓝鲸待机动画">
+        <div class="stage-controls">
+          <button class="control" id="replayButton" type="button">↻ 重播当前状态</button>
+          <button class="control" id="pauseButton" type="button">Ⅱ 暂停动效</button>
+        </div>
+      </div>
+      <aside class="detail" aria-live="polite">
+        <p class="detail-kicker" id="detailGroup">DESK PET STATE</p>
+        <h2 id="detailTitle">待机 · 浮游</h2>
+        <p class="detail-copy" id="detailCopy">轻轻漂浮、尾鳍缓摆，偶尔从喷水孔冒出小气泡。</p>
+        <div class="detail-meta"><span class="tag">透明背景</span><span class="tag">SVG + CSS</span><span class="tag">无外部依赖</span></div>
+        <div class="filename" id="detailFile">assets/whale-idle.svg</div>
+      </aside>
+    </section>
+
+    <section aria-labelledby="statesHeading">
+      <div class="section-head">
+        <div><h2 id="statesHeading">全部动画状态</h2><p>按类别筛选，查看每个状态的独立 SVG 动效。</p></div>
+        <div class="state-count" id="stateCount">显示 33 个状态</div>
+      </div>
+      <nav class="filters" id="filters" aria-label="状态分类"></nav>
+      <div class="grid" id="stateGrid"></div>
+    </section>
+
+    <p class="footer-note">v1 预览稿，尚未注册为内置主题。角色配色、动作幅度、个别状态的道具和 mini 模式尺寸都可以继续按你的反馈调整。</p>
+  </main>
+  <script>
+    const items = [
+      { file: "whale-idle.svg", title: "待机 · 浮游", group: "主状态", category: "core", copy: "轻轻漂浮、尾鳍缓摆，偶尔从喷水孔冒出小气泡。" },
+      { file: "whale-roam.svg", title: "游动 · 巡游", group: "主状态", category: "core", copy: "身体水平游动，尾鳍加快摆动，身后留下一串小泡泡。" },
+      { file: "whale-yawning.svg", title: "打哈欠", group: "睡眠流程", category: "core", copy: "身体先拉伸再放松，张嘴打哈欠后进入打盹状态。" },
+      { file: "whale-dozing.svg", title: "打盹", group: "睡眠流程", category: "core", copy: "合上眼睛做缓慢呼吸，头顶浮起轻柔的 Z 气泡。" },
+      { file: "whale-collapsing.svg", title: "倒下", group: "睡眠流程", category: "core", copy: "从打盹姿势侧身倒下，作为进入深睡的过渡动作。" },
+      { file: "whale-sleeping.svg", title: "深睡", group: "睡眠流程", category: "core", copy: "低伏休息并保持缓慢呼吸，适合长时间无活动。" },
+      { file: "whale-waking.svg", title: "醒来", group: "睡眠流程", category: "core", copy: "身体弹起、尾鳍跟上，气泡和小星点表现刚睡醒的活力。" },
+      { file: "whale-thinking.svg", title: "思考", group: "工作状态", category: "core", copy: "微微歪头，头顶的思考泡泡轻轻脉动。" },
+      { file: "whale-typing.svg", title: "工作 · 敲键", group: "工作状态", category: "core", copy: "用胸鳍敲击小型海蓝键盘，作为单会话工作状态。" },
+      { file: "whale-juggling.svg", title: "多任务 · 泡泡杂耍", group: "工作状态", category: "core", copy: "几颗彩色泡泡轮番弹起，表现多会话或并行任务。" },
+      { file: "whale-building.svg", title: "并行任务 · 堆珊瑚", group: "工作档位", category: "tier", copy: "珊瑚积木在鲸鱼身旁逐层出现，对应高并发工作档位。" },
+      { file: "whale-sweeping.svg", title: "清理 · 扫走碎泡", group: "工作状态", category: "core", copy: "挥动胸鳍和小扫帚，把边缘的碎泡推开。" },
+      { file: "whale-carrying.svg", title: "搬运 · 小包裹", group: "工作状态", category: "core", copy: "鲸鱼抱着一枚系着珊瑚色蝴蝶结的包裹缓慢漂浮。" },
+      { file: "whale-error.svg", title: "错误 · 慌张冒泡", group: "反馈状态", category: "core", copy: "身体短促左右抖动，冒出珊瑚色泡泡和紧张表情。" },
+      { file: "whale-attention.svg", title: "注意 · 水花提示", group: "反馈状态", category: "core", copy: "金色提示符弹出，鲸鱼轻轻一跳吸引注意。" },
+      { file: "whale-notification.svg", title: "通知 · 小铃声", group: "反馈状态", category: "core", copy: "小铃铛左右摇晃，身体跟着轻弹几下。" },
+      { file: "whale-dizzy.svg", title: "眩晕 · 星星打转", group: "反馈状态", category: "core", copy: "身体摇摆，三颗小星星在头顶附近打转。" },
+      { file: "whale-idle-look.svg", title: "四处张望", group: "闲置动作", category: "idle", copy: "闲置时左右张望，身体随视线轻轻倾斜。" },
+      { file: "whale-idle-bubbles.svg", title: "吹泡泡", group: "闲置动作", category: "idle", copy: "吹出大小不同的气泡，作为待机随机动作。" },
+      { file: "whale-mini-idle.svg", title: "迷你 · 待机", group: "迷你模式", category: "mini", copy: "紧凑版轻柔漂浮动画。" },
+      { file: "whale-mini-enter.svg", title: "迷你 · 入场", group: "迷你模式", category: "mini", copy: "从小到大弹入边缘停靠位置。" },
+      { file: "whale-mini-enter-sleep.svg", title: "迷你 · 入睡", group: "迷你模式", category: "mini", copy: "迷你鲸鱼侧身倒下，平滑进入睡眠。" },
+      { file: "whale-mini-crabwalk.svg", title: "迷你 · 巡游", group: "迷你模式", category: "mini", copy: "尾鳍快速摆动，左右小幅游动。" },
+      { file: "whale-mini-peek.svg", title: "迷你 · 探头", group: "迷你模式", category: "mini", copy: "从屏幕边缘探出一点，再轻轻缩回。" },
+      { file: "whale-mini-alert.svg", title: "迷你 · 提醒", group: "迷你模式", category: "mini", copy: "迷你状态下的快速水花提示。" },
+      { file: "whale-mini-happy.svg", title: "迷你 · 开心", group: "迷你模式", category: "mini", copy: "轻快弹跳，周围亮起小气泡和星点。" },
+      { file: "whale-mini-sleep.svg", title: "迷你 · 睡觉", group: "迷你模式", category: "mini", copy: "闭眼漂浮并显示小小的睡眠气泡。" },
+      { file: "whale-mini-working.svg", title: "迷你 · 工作", group: "迷你模式", category: "mini", copy: "紧凑版胸鳍敲键动画。" },
+      { file: "whale-react-drag.svg", title: "拖拽", group: "交互反应", category: "reaction", copy: "身体被拉长，尾部拖出气泡轨迹。" },
+      { file: "whale-react-left.svg", title: "左侧轻点", group: "交互反应", category: "reaction", copy: "被轻点后向一侧晃动，并摆动胸鳍回应。" },
+      { file: "whale-react-right.svg", title: "右侧轻点", group: "交互反应", category: "reaction", copy: "被轻点后向另一侧晃动，和左侧动作保持区分。" },
+      { file: "whale-react-double.svg", title: "双击", group: "交互反应", category: "reaction", copy: "连续弹跳两次并冒出庆祝泡泡。" },
+      { file: "whale-react-annoyed.svg", title: "不耐烦", group: "交互反应", category: "reaction", copy: "轻轻摇头、压低眉毛，表达一点小情绪。" },
+    ];
+    const categories = [
+      ["all", "全部"], ["core", "主状态"], ["tier", "工作档位"], ["idle", "闲置动作"], ["mini", "迷你模式"], ["reaction", "交互反应"],
+    ];
+    const grid = document.getElementById("stateGrid");
+    const stage = document.getElementById("stageWhale");
+    const filterBar = document.getElementById("filters");
+    let activeCategory = "all";
+    let activeItem = items[0];
+    let paused = false;
+
+    function selectItem(item, replay = true) {
+      activeItem = item;
+      stage.src = `assets/${item.file}${replay ? `?preview=${Date.now()}` : ""}`;
+      stage.alt = `${item.title} SVG 动画`;
+      document.getElementById("detailGroup").textContent = item.group.toUpperCase();
+      document.getElementById("detailTitle").textContent = item.title;
+      document.getElementById("detailCopy").textContent = item.copy;
+      document.getElementById("detailFile").textContent = `assets/${item.file}`;
+      document.querySelectorAll(".state-card").forEach((card) => card.classList.toggle("selected", card.dataset.file === item.file));
+    }
+
+    function renderFilters() {
+      filterBar.innerHTML = "";
+      for (const [key, label] of categories) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `filter${key === activeCategory ? " active" : ""}`;
+        button.textContent = label;
+        button.addEventListener("click", () => { activeCategory = key; renderFilters(); renderGrid(); });
+        filterBar.appendChild(button);
+      }
+    }
+
+    function renderGrid() {
+      const visible = activeCategory === "all" ? items : items.filter((item) => item.category === activeCategory);
+      document.getElementById("stateCount").textContent = `显示 ${visible.length} / ${items.length} 个状态`;
+      grid.innerHTML = "";
+      for (const item of visible) {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = `state-card${item.file === activeItem.file ? " selected" : ""}`;
+        card.dataset.file = item.file;
+        card.setAttribute("aria-label", `预览${item.title}`);
+        card.innerHTML = `<span class="thumb"><img src="assets/${item.file}" alt="" loading="lazy"></span><span class="card-label"></span><span class="card-group"></span>`;
+        card.querySelector(".card-label").textContent = item.title;
+        card.querySelector(".card-group").textContent = item.group;
+        card.addEventListener("click", () => selectItem(item));
+        grid.appendChild(card);
+      }
+    }
+
+    document.getElementById("replayButton").addEventListener("click", () => selectItem(activeItem));
+    document.getElementById("pauseButton").addEventListener("click", (event) => {
+      paused = !paused;
+      document.body.classList.toggle("paused", paused);
+      event.currentTarget.textContent = paused ? "▶ 继续动效" : "Ⅱ 暂停动效";
+    });
+    const pauseStyle = document.createElement("style");
+    pauseStyle.textContent = "body.paused *, body.paused *::before, body.paused *::after { animation-play-state: paused !important; }";
+    document.head.appendChild(pauseStyle);
+    renderFilters();
+    renderGrid();
+  </script>
+</body>
+</html>
