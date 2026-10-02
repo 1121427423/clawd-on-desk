@@ -206,6 +206,44 @@ before listener registration if DSH is upgraded in place. This is an explicit
 experimental limitation: restart after changes, heed Doctor compatibility
 warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
 
+## Machine-level registration (the Electron desktop app)
+
+The profile route above registers the bridge through
+`dsh plugin --profile web add`, which only reaches the `web` profile. The
+DeepSeek Harness **desktop app** reserves its own `desktop` profile and refuses
+that command outright (`profile "desktop" is managed exclusively by the
+Electron application`), so the profile route can never make Clawd visible to
+the app.
+
+For that case Clawd has a second, mutually exclusive registration target: the
+machine-level home patch `$DSH_HOME/cordis.patch.yml`. DSH documents this layer
+as *applied over every profile's own layer* — "machine-local preferences that
+apply to every profile, so it outranks the per-profile layer" — so one entry
+reaches `web` and `desktop` alike. DSH's root-include importer rewrites an
+absolute entry `name` with `pathToFileURL` before resolving it, so the bridge is
+materialised once under `$DSH_HOME/clawd-on-desk/bridge/` and named by absolute
+path; no pnpm install into any profile's `node_modules` is involved.
+
+The file belongs to the user. Clawd owns exactly one marker-delimited block
+inside it (`# --- clawd-on-desk bridge: managed block, do not edit ---`), never
+rewrites a byte outside it, appends only to a document it can prove is a
+top-level sequence, and backs the file up before its first modification. A
+malformed home patch would break the boot of every profile, so every mutation
+fails closed: an unappendable document, unbalanced markers, or a block pointing
+somewhere else is reported for manual inspection instead of being rewritten.
+
+The two routes are kept mutually exclusive on purpose. A top-level `insert`
+appends without deduplicating, so a bundled entry and a home entry with the same
+loader id would mount the bridge twice and double every state event. The
+machine-level route therefore refuses to start while a managed profile bundle is
+live, and vice versa.
+
+The mechanism was verified on 2026-10-02 by writing the block and running
+`dsh --profile web --dump-config`, which composed `clawd-bridge` with its
+absolute path rewritten to a `file://` URL. Composing the `desktop` profile
+cannot be checked the same way — the CLI refuses to dump it — so desktop
+loading is confirmed only by restarting the app.
+
 ## Scope and fallback
 
 - Windows x64 native DSH web is the first target. Real rc.6 install, config

@@ -9,9 +9,13 @@ const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { asarUnpackedPath } = require("./json-utils");
 const { resolveNodeBinAsync } = require("./server-config");
+const homePatch = require("./dsh-home-patch");
 
 const BRIDGE_PACKAGE_NAME = "@dsh-external/dsh-clawd-bridge";
 const WEB_PROFILE_NAME = "web";
+// Reserved by the Electron desktop app; `dsh plugin --profile desktop` refuses
+// to touch it, which is why the machine-level home patch exists.
+const DESKTOP_PROFILE_NAME = "desktop";
 const DSH_RESTART_HINT = "DeepSeek Harness bridge verified on disk. Restart any running dsh web process to load this plugin generation.";
 const MANAGED_OWNER = "clawd-on-desk";
 const MANIFEST_FILE = "clawd-manifest.json";
@@ -2735,6 +2739,255 @@ async function isBridgeInstalled(options = {}) {
   return (await inspectDeepSeekHarnessIntegration(options)).status === "healthy";
 }
 
+// ---------------------------------------------------------------------------
+// Machine-level registration: $DSH_HOME/cordis.patch.yml
+//
+// The Electron desktop app reserves its own `desktop` profile and refuses
+// `dsh plugin --profile desktop`, so the profile route can never reach it. The
+// home-level patch layer applies over every profile's own layer and accepts an
+// absolute entry `name`, so Clawd materialises the bridge once under the DSH
+// home and registers it there instead: one registration that reaches `web` and
+// `desktop` alike, with no pnpm install into any profile.
+//
+// The two registration routes must never be active at the same time. A
+// top-level `insert` appends without deduping, so a bundled entry plus a home
+// entry would mount the bridge twice and double every state event.
+// ---------------------------------------------------------------------------
+
+const HOME_PATCH_REFERENCE_FILE = "home-patch-reference.json";
+
+function resolveDesktopProfileDir(dshHome) {
+  return path.join(dshHome, "profiles", DESKTOP_PROFILE_NAME);
+}
+
+async function isDesktopTargetPresent(options = {}) {
+  if (typeof options.desktopTargetPresent === "boolean") return options.desktopTargetPresent;
+  const dshHome = options.dshHome || resolveDshHome(options.env);
+  return exists(path.join(resolveDesktopProfileDir(dshHome), "package.json"));
+}
+
+function homePatchReferencePath(options = {}) {
+  return path.join(resolveManagedRoot(options), HOME_PATCH_REFERENCE_FILE);
+}
+
+/**
+ * Inspect the machine-level registration without mutating anything.
+ * @returns a health object; `status` is `ok`, `absent`, `foreign-target`,
+ *   `block-malformed`, `marker-invalid`, or `unreadable`.
+ */
+async function inspectHomePatchRegistration(options = {}) {
+  const dshHome = options.dshHome || resolveDshHome(options.env);
+  const patchPath = homePatch.resolveHomePatchPath(dshHome);
+  const stableDir = homePatch.resolveStableBridgeDir(dshHome);
+  const stableEntry = homePatch.resolveStableBridgeEntry(dshHome);
+  const reference = await readJson(homePatchReferencePath(options));
+  const base = { patchPath, stableDir, stableEntry, reference };
+  let content;
+  try {
+    content = await homePatch.readHomePatchFile(patchPath);
+  } catch (err) {
+    return { ...base, status: "unreadable", message: err && err.message ? err.message : String(err) };
+  }
+  const found = homePatch.findManagedBlock(content);
+  if (found.malformed) return { ...base, status: "block-malformed" };
+  if (!found.present) return { ...base, status: "absent" };
+  if (found.targetPath !== stableEntry) {
+    return { ...base, status: "foreign-target", targetPath: found.targetPath };
+  }
+  const marker = await readJson(path.join(stableDir, MANIFEST_FILE));
+  const markerContract = marker ? dshContractForMarker(marker) : null;
+  if (!marker || marker.owner !== MANAGED_OWNER || !markerContract) {
+    return { ...base, status: "marker-invalid", marker };
+  }
+  const actualHash = await hashBridgeDirectory(stableDir, markerContract);
+  if (actualHash !== marker.bundleHash) {
+    return { ...base, status: "marker-invalid", marker, message: "managed bytes do not match their marker" };
+  }
+  return { ...base, status: "ok", marker };
+}
+
+/**
+ * Write the bridge into its stable directory under the DSH home.
+ * Idempotent: the bytes are skipped when the marker already matches.
+ */
+async function materializeStableBridge(bundle, options = {}) {
+  const dshHome = options.dshHome || resolveDshHome(options.env);
+  const stableDir = options.stableDir || homePatch.resolveStableBridgeDir(dshHome);
+  const contract = options.contract || dshContractForVersion(options.dshVersion) || PREFERRED_DSH_CONTRACT;
+  const manifest = {
+    owner: MANAGED_OWNER,
+    schemaVersion: MANIFEST_SCHEMA_VERSION,
+    protocolVersion: BRIDGE_PROTOCOL_VERSION,
+    packageName: BRIDGE_PACKAGE_NAME,
+    bundleHash: bundle.bundleHash,
+    sourceClawdVersion: await sourceClawdVersion(options),
+    supportedDshRange: contract.supportedDshRange,
+    installedDshVersion: options.dshVersion || contract.version,
+    installedDshVersionAssumedAtStaging: options.dshVersionAssumed === true,
+    verifiedDshArtifact: contract.verifiedDshArtifact,
+    verifiedDshArtifactIntegrity: contract.verifiedDshArtifactIntegrity,
+    sourceAuditBaselineCommit: SOURCE_AUDIT_BASELINE_COMMIT,
+    registration: "home-patch",
+    installedAt: new Date().toISOString(),
+  };
+  const existing = await readJson(path.join(stableDir, MANIFEST_FILE));
+  const existingContract = existing ? dshContractForMarker(existing) : null;
+  if (
+    existing
+    && existing.owner === MANAGED_OWNER
+    && existing.bundleHash === bundle.bundleHash
+    && existingContract
+    && existingContract.version === contract.version
+    && (await hashBridgeDirectory(stableDir, existingContract)) === bundle.bundleHash
+  ) {
+    return { stableDir, created: false, manifest: existing };
+  }
+  const parentDir = path.dirname(stableDir);
+  await fsp.mkdir(parentDir, { recursive: true });
+  const stagingDir = `${stableDir}.staging-${process.pid}-${crypto.randomUUID()}`;
+  await fsp.mkdir(stagingDir, { recursive: false });
+  try {
+    for (const file of bundle.files) {
+      const target = path.join(stagingDir, ...file.relativePath.split("/"));
+      await fsp.mkdir(path.dirname(target), { recursive: true });
+      await fsp.writeFile(target, file.content, { flag: "wx" });
+    }
+    await fsp.writeFile(
+      path.join(stagingDir, MANIFEST_FILE),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      { flag: "wx", mode: 0o600 }
+    );
+    const retiredDir = await exists(stableDir)
+      ? `${stableDir}.retired-${Date.now()}`
+      : null;
+    if (retiredDir) await fsp.rename(stableDir, retiredDir);
+    try {
+      await fsp.rename(stagingDir, stableDir);
+    } catch (err) {
+      if (retiredDir) {
+        try { await fsp.rename(retiredDir, stableDir); } catch {}
+      }
+      throw err;
+    }
+    if (retiredDir) {
+      try { await fsp.rm(retiredDir, { recursive: true, force: true }); } catch {}
+    }
+    return { stableDir, created: true, manifest };
+  } catch (err) {
+    try { await fsp.rm(stagingDir, { recursive: true, force: true }); } catch {}
+    throw err;
+  }
+}
+
+async function writeHomePatchReference(patchPlan, options = {}) {
+  const filePath = homePatchReferencePath(options);
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  const payload = {
+    owner: MANAGED_OWNER,
+    schemaVersion: 1,
+    packageName: BRIDGE_PACKAGE_NAME,
+    registration: "home-patch",
+    patchPath: patchPlan.patchPath,
+    stableEntry: patchPlan.stableEntry,
+    createdAt: new Date().toISOString(),
+  };
+  const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  await fsp.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  await fsp.rename(tempPath, filePath);
+  return payload;
+}
+
+async function clearHomePatchReference(options = {}) {
+  const filePath = homePatchReferencePath(options);
+  try {
+    await fsp.rm(filePath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Register the bridge through the machine-level home patch.
+ * @returns `{ status, action, patchPath, stableDir, backupPath }` or an error
+ *   result when the two registration routes would collide.
+ */
+async function registerHomePatchBridge(options = {}) {
+  const dshHome = options.dshHome || resolveDshHome(options.env);
+  // A profile bundle and a home entry would both mount the bridge, so this
+  // route refuses to start while the profile route is live.
+  if (options.skipCollisionCheck !== true) {
+    const bundled = inspectDeepSeekHarnessDiskSync({ ...options, dshHome });
+    if (bundled && bundled.status === "ok") {
+      return {
+        status: "error",
+        reason: "bundle-already-registered",
+        message: "The Clawd bridge is already registered as a profile bundle; remove it before switching to the machine-level registration",
+      };
+    }
+  }
+  const patchPath = homePatch.resolveHomePatchPath(dshHome);
+  const stableEntry = homePatch.resolveStableBridgeEntry(dshHome);
+  const bundle = await readSourceBundle(options);
+  const contract = options.contract
+    || dshContractForVersion(options.dshVersion)
+    || PREFERRED_DSH_CONTRACT;
+  const materialized = await materializeStableBridge(bundle, { ...options, contract, stableDir: path.dirname(path.dirname(stableEntry)) });
+  let content;
+  try {
+    content = await homePatch.readHomePatchFile(patchPath);
+  } catch (err) {
+    return { status: "error", reason: "patch-unreadable", message: err && err.message ? err.message : String(err) };
+  }
+  let plan;
+  try {
+    plan = homePatch.planManagedBlockWrite(content, stableEntry);
+  } catch (err) {
+    return { status: "error", reason: "patch-not-editable", message: err && err.message ? err.message : String(err) };
+  }
+  const write = await homePatch.writeHomePatchFile(patchPath, plan);
+  const reference = await writeHomePatchReference({ patchPath, stableEntry }, options);
+  return {
+    status: "ok",
+    action: write.action,
+    patchPath,
+    stableDir: materialized.stableDir,
+    stableEntry,
+    backupPath: write.backupPath,
+    created: materialized.created,
+    reference,
+    message: DSH_RESTART_HINT,
+  };
+}
+
+/**
+ * Remove the machine-level registration. Only Clawd's own block is touched.
+ * @returns `{ status, action }` where action is `removed`, `absent`, or `unchanged`.
+ */
+async function unregisterHomePatchBridge(options = {}) {
+  const dshHome = options.dshHome || resolveDshHome(options.env);
+  const patchPath = homePatch.resolveHomePatchPath(dshHome);
+  const stableDir = homePatch.resolveStableBridgeDir(dshHome);
+  let content;
+  try {
+    content = await homePatch.readHomePatchFile(patchPath);
+  } catch (err) {
+    return { status: "error", reason: "patch-unreadable", message: err && err.message ? err.message : String(err) };
+  }
+  let plan;
+  try {
+    plan = homePatch.planManagedBlockRemoval(content);
+  } catch (err) {
+    return { status: "error", reason: "patch-not-editable", message: err && err.message ? err.message : String(err) };
+  }
+  const write = await homePatch.writeHomePatchFile(patchPath, plan);
+  await clearHomePatchReference(options);
+  if (options.keepStableDir !== true) {
+    try { await fsp.rm(stableDir, { recursive: true, force: true }); } catch {}
+  }
+  return { status: "ok", action: write.action, patchPath, stableDir, backupPath: write.backupPath };
+}
+
 module.exports = {
   BRIDGE_PACKAGE_NAME,
   BRIDGE_PROTOCOL_VERSION,
@@ -2755,6 +3008,11 @@ module.exports = {
   dshCommandPathsSync,
   hasDshCommand,
   hasPnpm,
+  inspectHomePatchRegistration,
+  isDesktopTargetPresent,
+  registerHomePatchBridge,
+  resolveDesktopProfileDir,
+  unregisterHomePatchBridge,
   installDeepSeekHarnessBridge,
   inspectDeepSeekHarnessDiskSync,
   inspectDeepSeekHarnessIntegration,
